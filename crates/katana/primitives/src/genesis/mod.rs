@@ -3,13 +3,12 @@ mod builder;
 pub mod constant;
 pub mod json;
 
-pub use builder::{Builder as GenesisBuilder, GenesisBuilderError};
-
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::sync::Arc;
 
 use alloy_primitives::U256;
+pub use builder::{Builder as GenesisBuilder, GenesisBuilderError};
 use serde::{Deserialize, Serialize};
 use starknet::core::serde::unsigned_field_element::UfeHex;
 use starknet::core::utils::cairo_short_string_to_felt;

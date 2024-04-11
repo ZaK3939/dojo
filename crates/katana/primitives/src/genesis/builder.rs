@@ -4,9 +4,8 @@ use serde_json::Value;
 
 use super::allocation::{GenesisAccountAlloc, GenesisAllocation, GenesisContractAlloc};
 use super::json::GenesisJsonError;
-pub use super::json::PathOrFullArtifact;
-use super::{Genesis, GenesisClass};
-use crate::block::{BlockHash, BlockNumber};
+use super::{FeeTokenConfig, Genesis, GenesisClass, UniversalDeployerConfig};
+use crate::block::{BlockHash, BlockNumber, GasPrices};
 use crate::class::ClassHash;
 use crate::contract::ContractAddress;
 use crate::genesis::json::parse_genesis_class_artifacts;
@@ -24,6 +23,10 @@ pub enum GenesisBuilderError {
     NumberNotSet,
     #[error("Sequencer address not set")]
     SequencerAddressNotSet,
+    #[error("L1 gas prices not set")]
+    L1GasPricesNotSet,
+    #[error("Fee token not set")]
+    FeeTokenNotSet,
     #[error("No class found with hash {class_hash:#x} for contract {contract}")]
     UnknownClassHash { contract: ContractAddress, class_hash: ClassHash },
     #[error("Error parsing the class artifact: {0}")]
@@ -39,6 +42,9 @@ pub struct Builder {
     number: Option<BlockNumber>,
     timestamp: Option<u64>,
     sequencer_address: Option<ContractAddress>,
+    gas_prices: Option<GasPrices>,
+    fee_token: Option<FeeTokenConfig>,
+    udc: Option<UniversalDeployerConfig>,
     raw_classes: Vec<(Value, Option<ClassHash>)>,
     allocations: BTreeMap<ContractAddress, GenesisAllocation>,
     // for compatibility when creating a new builder from an existing genesis
@@ -64,6 +70,18 @@ impl Builder {
 
     pub fn sequencer_address(self, address: ContractAddress) -> Self {
         Self { sequencer_address: Some(address), ..self }
+    }
+
+    pub fn gas_prices(self, gas_prices: GasPrices) -> Self {
+        Self { gas_prices: Some(gas_prices), ..self }
+    }
+
+    pub fn fee_token(self, fee_token: FeeTokenConfig) -> Self {
+        Self { fee_token: Some(fee_token), ..self }
+    }
+
+    pub fn universal_deployer(self, udc: UniversalDeployerConfig) -> Self {
+        Self { udc: Some(udc), ..self }
     }
 
     pub fn add_classes<I>(mut self, classes: I) -> Self
@@ -116,18 +134,21 @@ impl Builder {
         let state_root = self.state_root.ok_or(GenesisBuilderError::StateRootNotSet)?;
         let number = self.number.ok_or(GenesisBuilderError::NumberNotSet)?;
         let timestamp = self.timestamp.ok_or(GenesisBuilderError::TimestampNotSet)?;
-        let sequencer_address =
-            self.sequencer_address.ok_or(GenesisBuilderError::SequencerAddressNotSet)?;
+        let seq_addr = self.sequencer_address.ok_or(GenesisBuilderError::SequencerAddressNotSet)?;
+        let fee_token = self.fee_token.ok_or(GenesisBuilderError::FeeTokenNotSet)?;
+        let gas_prices = self.gas_prices.ok_or(GenesisBuilderError::L1GasPricesNotSet)?;
 
         Ok(Genesis {
             parent_hash,
             state_root,
             number,
             timestamp,
-            sequencer_address,
+            sequencer_address: seq_addr,
+            gas_prices,
+            fee_token,
+            universal_deployer: self.udc,
             classes: self.classes,
             allocations: self.allocations,
-            ..Default::default()
         })
     }
 }
@@ -140,6 +161,9 @@ impl From<Genesis> for Builder {
             number: Some(value.number),
             timestamp: Some(value.timestamp),
             sequencer_address: Some(value.sequencer_address),
+            gas_prices: Some(value.gas_prices),
+            fee_token: Some(value.fee_token),
+            udc: value.universal_deployer,
             raw_classes: Vec::new(),
             allocations: value.allocations,
             classes: value.classes,
