@@ -29,10 +29,10 @@ pub enum GenesisBuilderError {
     FeeTokenNotSet,
     #[error("No class found with hash {class_hash:#x} for contract {contract}")]
     UnknownClassHash { contract: ContractAddress, class_hash: ClassHash },
-    #[error("Error parsing the class artifact: {0}")]
-    ClassParsingError(#[from] GenesisJsonError),
     #[error("Contract allocation is missing a class hash")]
     MissingClassHash,
+    #[error("Error parsing the class artifact: {0}")]
+    ClassParsingError(#[from] GenesisJsonError),
 }
 
 #[derive(Debug)]
@@ -52,6 +52,22 @@ pub struct Builder {
 }
 
 impl Builder {
+    pub fn new() -> Self {
+        Self {
+            parent_hash: None,
+            state_root: None,
+            number: None,
+            timestamp: None,
+            sequencer_address: None,
+            gas_prices: None,
+            fee_token: None,
+            udc: None,
+            raw_classes: Vec::new(),
+            allocations: BTreeMap::new(),
+            classes: HashMap::new(),
+        }
+    }
+
     pub fn parent_hash(self, hash: BlockHash) -> Self {
         Self { parent_hash: Some(hash), ..self }
     }
@@ -68,6 +84,8 @@ impl Builder {
         Self { timestamp: Some(timestamp), ..self }
     }
 
+    // TODO: need to ensure the sequencer address is one of the allocated accounts.
+    // but this is not enforced in the json config (WARN).
     pub fn sequencer_address(self, address: ContractAddress) -> Self {
         Self { sequencer_address: Some(address), ..self }
     }
@@ -76,6 +94,9 @@ impl Builder {
         Self { gas_prices: Some(gas_prices), ..self }
     }
 
+    // TOOD: need to check that the class is declared.
+    // we should pass the class artifact along with the config here instead of
+    // passing it in a separate method ie `add_classes`.
     pub fn fee_token(self, fee_token: FeeTokenConfig) -> Self {
         Self { fee_token: Some(fee_token), ..self }
     }
@@ -86,7 +107,7 @@ impl Builder {
 
     pub fn add_classes<I>(mut self, classes: I) -> Self
     where
-        I: Iterator<Item = (Value, Option<ClassHash>)>,
+        I: IntoIterator<Item = (Value, Option<ClassHash>)>,
     {
         self.raw_classes.extend(classes);
         self
@@ -120,6 +141,7 @@ impl Builder {
             self.classes.entry(hash).or_insert(class);
         }
 
+        // TODO(kariy): update fee token balance in the genesis
         for (address, alloc) in &mut self.allocations {
             let class_hash = alloc.class_hash().ok_or(GenesisBuilderError::MissingClassHash)?;
             if !self.classes.contains_key(&class_hash) {
@@ -168,5 +190,58 @@ impl From<Genesis> for Builder {
             allocations: value.allocations,
             classes: value.classes,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::genesis::allocation::GenesisAccount;
+
+    use super::*;
+
+    #[test]
+    fn build_genesis() {
+        let genesis = Builder::new()
+            .parent_hash(BlockHash::default())
+            .state_root(FieldElement::default())
+            .number(BlockNumber::default())
+            .timestamp(0)
+            .sequencer_address(ContractAddress::default())
+            .gas_prices(GasPrices::default())
+            // .fee_token(FeeTokenConfig::default())
+            .add_classes([])
+            .add_accounts([])
+            .add_contracts([])
+            .build()
+            .unwrap();
+
+        assert_eq!(genesis.parent_hash, BlockHash::default());
+        assert_eq!(genesis.state_root, FieldElement::default());
+        assert_eq!(genesis.number, BlockNumber::default());
+        assert_eq!(genesis.timestamp, 0);
+        assert_eq!(genesis.sequencer_address, ContractAddress::default());
+        assert_eq!(genesis.gas_prices, GasPrices::default());
+        // assert_eq!(genesis.fee_token, FeeTokenConfig::default());
+        assert_eq!(genesis.classes, HashMap::new());
+        assert_eq!(genesis.allocations, BTreeMap::new());
+    }
+
+    #[test]
+    fn build_genesis_from_other_genesis() {
+        let default_genesis = Genesis::default();
+        let genesis = Builder::from(default_genesis.clone())
+            .add_classes([])
+            .add_accounts([])
+            .add_contracts([])
+            .build()
+            .unwrap();
+
+        assert_eq!(default_genesis.parent_hash, genesis.parent_hash);
+        assert_eq!(default_genesis.state_root, genesis.state_root);
+        assert_eq!(default_genesis.number, genesis.number);
+        assert_eq!(default_genesis.timestamp, genesis.timestamp);
+        assert_eq!(default_genesis.sequencer_address, genesis.sequencer_address);
+        assert_eq!(default_genesis.gas_prices, genesis.gas_prices);
+        assert_eq!(default_genesis.universal_deployer, genesis.universal_deployer);
     }
 }
