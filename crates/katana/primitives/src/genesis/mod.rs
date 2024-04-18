@@ -34,7 +34,7 @@ use crate::version::CURRENT_STARKNET_VERSION;
 use crate::FieldElement;
 
 #[serde_with::serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct FeeTokenConfig {
     /// The name of the fee token.
     pub name: String,

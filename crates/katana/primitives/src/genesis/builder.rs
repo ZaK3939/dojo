@@ -141,7 +141,6 @@ impl Builder {
             self.classes.entry(hash).or_insert(class);
         }
 
-        // TODO(kariy): update fee token balance in the genesis
         for (address, alloc) in &mut self.allocations {
             let class_hash = alloc.class_hash().ok_or(GenesisBuilderError::MissingClassHash)?;
             if !self.classes.contains_key(&class_hash) {
@@ -195,8 +194,6 @@ impl From<Genesis> for Builder {
 
 #[cfg(test)]
 mod tests {
-    use crate::genesis::allocation::GenesisAccount;
-
     use super::*;
 
     #[test]
@@ -208,7 +205,7 @@ mod tests {
             .timestamp(0)
             .sequencer_address(ContractAddress::default())
             .gas_prices(GasPrices::default())
-            // .fee_token(FeeTokenConfig::default())
+            .fee_token(FeeTokenConfig::default())
             .add_classes([])
             .add_accounts([])
             .add_contracts([])
@@ -221,7 +218,7 @@ mod tests {
         assert_eq!(genesis.timestamp, 0);
         assert_eq!(genesis.sequencer_address, ContractAddress::default());
         assert_eq!(genesis.gas_prices, GasPrices::default());
-        // assert_eq!(genesis.fee_token, FeeTokenConfig::default());
+        assert_eq!(genesis.fee_token, FeeTokenConfig::default());
         assert_eq!(genesis.classes, HashMap::new());
         assert_eq!(genesis.allocations, BTreeMap::new());
     }
