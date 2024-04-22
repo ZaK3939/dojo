@@ -7,7 +7,7 @@ use katana_primitives::contract::{ContractAddress, StorageKey, StorageValue};
 use katana_primitives::env::{BlockEnv, CfgEnv};
 use katana_primitives::fee::TxFeeInfo;
 use katana_primitives::state::{StateUpdates, StateUpdatesWithDeclaredClasses};
-use katana_primitives::trace::TxExecInfo;
+use katana_primitives::trace::{self, TxExecInfo};
 use katana_primitives::transaction::{
     DeployAccountTx, ExecutableTx, ExecutableTxWithHash, InvokeTx,
 };

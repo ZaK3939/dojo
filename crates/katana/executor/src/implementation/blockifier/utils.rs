@@ -534,7 +534,7 @@ fn to_call_info(call: CallInfo) -> trace::CallInfo {
     let class_hash = call.call.class_hash.map(|a| a.0.into());
     let entry_point_selector = call.call.entry_point_selector.0.into();
     let calldata = call.call.calldata.0.iter().map(|f| (*f).into()).collect();
-    let retdata = call.execution.retdata.0.iter().map(|f| (*f).into()).collect();
+    let retdata = call.execution.retdata.0.into_iter().map(|f| f.into()).collect();
 
     let builtin_counter = call.vm_resources.builtin_instance_counter;
     let execution_resources = trace::ExecutionResources {
@@ -605,10 +605,17 @@ fn to_l2_l1_messages(
 
 #[cfg(test)]
 mod tests {
-    use katana_primitives::chain::{ChainId, NamedChainId};
-    use starknet::core::utils::parse_cairo_short_string;
 
-    use crate::implementation::blockifier::utils::to_blk_chain_id;
+    use std::collections::HashSet;
+
+    use cairo_vm::vm::runners::cairo_runner::ExecutionResources;
+    use katana_primitives::chain::{ChainId, NamedChainId};
+    use starknet_api::core::EntryPointSelector;
+    use starknet_api::hash::StarkFelt;
+    use starknet_api::stark_felt;
+    use starknet_api::transaction::{EventContent, EventData, EventKey};
+
+    use super::*;
 
     #[test]
     fn convert_chain_id() {
@@ -619,5 +626,143 @@ mod tests {
         assert_eq!(mainnet.0, parse_cairo_short_string(&NamedChainId::Mainnet.id()).unwrap());
         assert_eq!(goerli.0, parse_cairo_short_string(&NamedChainId::Goerli.id()).unwrap());
         assert_eq!(sepolia.0, parse_cairo_short_string(&NamedChainId::Sepolia.id()).unwrap());
+    }
+
+    fn create_blockifier_call_info() -> CallInfo {
+        let top_events = vec![OrderedEvent {
+            order: 0,
+            event: EventContent {
+                data: EventData(vec![888u128.into()]),
+                keys: vec![EventKey(999u128.into())],
+            },
+        }];
+        let nested_events = vec![
+            OrderedEvent {
+                order: 1,
+                event: EventContent {
+                    data: EventData(vec![889u128.into()]),
+                    keys: vec![EventKey(990u128.into())],
+                },
+            },
+            OrderedEvent {
+                order: 2,
+                event: EventContent {
+                    data: EventData(vec![0u128.into()]),
+                    keys: vec![EventKey(9u128.into())],
+                },
+            },
+        ];
+
+        let nested_call = CallInfo {
+            execution: CallExecution { events: nested_events, ..Default::default() },
+            ..Default::default()
+        };
+
+        CallInfo {
+            call: CallEntryPoint {
+                class_hash: None,
+                initial_gas: 77,
+                call_type: CallType::Call,
+                caller_address: 200u128.into(),
+                storage_address: 100u128.into(),
+                code_address: Some(100u128.into()),
+                entry_point_type: EntryPointType::External,
+                calldata: Calldata(Arc::new(vec![stark_felt!(1_u8)])),
+                entry_point_selector: EntryPointSelector(stark_felt!(999_u32)),
+            },
+            execution: CallExecution {
+                failed: true,
+                gas_consumed: 12345,
+                events: top_events,
+                ..Default::default()
+            },
+            storage_read_values: vec![stark_felt!(1_u8), stark_felt!(2_u8)],
+            accessed_storage_keys: HashSet::from([3u128.into(), 4u128.into(), 5u128.into()]),
+            vm_resources: ExecutionResources {
+                n_steps: 1_000_000,
+                n_memory_holes: 9_000,
+                builtin_instance_counter: HashMap::from([
+                    ("ecdsa_builtin".into(), 50),
+                    ("pedersen_builtin".into(), 9),
+                ]),
+            },
+            inner_calls: vec![nested_call],
+        }
+    }
+
+    #[test]
+    fn convert_call_info() {
+        // setup expected values
+        let call = create_blockifier_call_info();
+
+        let expected_contract_address = to_address(call.call.storage_address);
+        let expected_caller_address = to_address(call.call.caller_address);
+        let expected_code_address = call.call.code_address.map(to_address);
+        let expected_class_hash = call.call.class_hash.map(|a| a.0.into());
+        let expected_entry_point_selector = call.call.entry_point_selector.0.into();
+        let expected_calldata: Vec<FieldElement> =
+            call.call.calldata.0.iter().map(|f| (*f).into()).collect();
+        let expected_retdata: Vec<FieldElement> =
+            call.execution.retdata.0.iter().map(|f| (*f).into()).collect();
+
+        let builtin_counter = call.vm_resources.builtin_instance_counter.clone();
+        let expected_execution_resources = trace::ExecutionResources {
+            n_steps: call.vm_resources.n_steps as u64,
+            n_memory_holes: call.vm_resources.n_memory_holes as u64,
+            builtin_instance_counter: builtin_counter
+                .into_iter()
+                .map(|(k, v)| (k, v as u64))
+                .collect(),
+        };
+
+        let CallExecution { events, l2_to_l1_messages, .. } = call.execution.clone();
+        let expected_events: Vec<_> = events.into_iter().map(to_ordered_event).collect();
+        let expected_l2_to_l1_msg: Vec<_> = l2_to_l1_messages
+            .into_iter()
+            .map(|m| to_l2_l1_messages(m, expected_contract_address))
+            .collect();
+
+        let expected_call_type = match call.call.call_type {
+            CallType::Call => trace::CallType::Call,
+            CallType::Delegate => trace::CallType::Delegate,
+        };
+
+        let expected_entry_point_type = match call.call.entry_point_type {
+            EntryPointType::External => trace::EntryPointType::External,
+            EntryPointType::L1Handler => trace::EntryPointType::L1Handler,
+            EntryPointType::Constructor => trace::EntryPointType::Constructor,
+        };
+
+        let expected_storage_read_values: Vec<FieldElement> =
+            call.storage_read_values.iter().map(|f| (*f).into()).collect();
+        let expected_storage_keys: HashSet<FieldElement> =
+            call.accessed_storage_keys.iter().map(|k| (*k.0.key()).into()).collect();
+        let expected_inner_calls: Vec<_> =
+            call.inner_calls.clone().into_iter().map(to_call_info).collect();
+
+        let expected_gas_consumed = call.execution.gas_consumed as u128;
+        let expected_failed = call.execution.failed;
+
+        // convert to call info
+        let call = to_call_info(call.clone());
+
+        // assert actual values
+        assert_eq!(call.contract_address, expected_contract_address);
+        assert_eq!(call.caller_address, expected_caller_address);
+        assert_eq!(call.code_address, expected_code_address);
+        assert_eq!(call.class_hash, expected_class_hash);
+        assert_eq!(call.entry_point_selector, expected_entry_point_selector);
+        assert_eq!(call.calldata, expected_calldata);
+        assert_eq!(call.retdata, expected_retdata);
+        assert_eq!(call.execution_resources, expected_execution_resources);
+        assert_eq!(call.events, expected_events);
+        assert_eq!(call.l2_to_l1_messages, expected_l2_to_l1_msg);
+        assert_eq!(call.call_type, expected_call_type);
+        assert_eq!(call.entry_point_type, expected_entry_point_type);
+        assert_eq!(call.storage_read_values, expected_storage_read_values);
+        assert_eq!(call.accessed_storage_keys, expected_storage_keys);
+        assert_eq!(call.inner_calls, expected_inner_calls);
+        assert_eq!(call.gas_consumed, expected_gas_consumed);
+        assert_eq!(call.failed, expected_failed);
     }
 }
