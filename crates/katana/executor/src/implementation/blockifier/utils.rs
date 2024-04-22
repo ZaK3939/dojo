@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use blockifier::block_context::{BlockContext, BlockInfo, ChainInfo, FeeTokenAddresses, GasPrices};
-use blockifier::execution::call_info::CallInfo;
+use blockifier::execution::call_info::{
+    CallExecution, CallInfo, OrderedEvent, OrderedL2ToL1Message,
+};
 use blockifier::execution::common_hints::ExecutionMode;
 use blockifier::execution::contract_class::{ContractClass, ContractClassV0, ContractClassV1};
 use blockifier::execution::entry_point::{
@@ -29,7 +31,7 @@ use katana_primitives::trace::TxExecInfo;
 use katana_primitives::transaction::{
     DeclareTx, DeployAccountTx, ExecutableTx, ExecutableTxWithHash, InvokeTx,
 };
-use katana_primitives::FieldElement;
+use katana_primitives::{event, message, trace, FieldElement};
 use katana_provider::traits::contract::ContractClassProvider;
 use starknet::core::types::PriceUnit;
 use starknet::core::utils::parse_cairo_short_string;
@@ -525,74 +527,80 @@ pub fn to_exec_info(exec_info: TransactionExecutionInfo) -> TxExecInfo {
     }
 }
 
-fn to_call_info(call_info: CallInfo) -> katana_primitives::trace::CallInfo {
-    let message_to_l1_from_address = if let Some(a) = call_info.call.code_address {
-        to_address(a)
-    } else {
-        to_address(call_info.call.caller_address)
+fn to_call_info(call: CallInfo) -> trace::CallInfo {
+    let contract_address = to_address(call.call.storage_address);
+    let caller_address = to_address(call.call.caller_address);
+    let code_address = call.call.code_address.map(to_address);
+    let class_hash = call.call.class_hash.map(|a| a.0.into());
+    let entry_point_selector = call.call.entry_point_selector.0.into();
+    let calldata = call.call.calldata.0.iter().map(|f| (*f).into()).collect();
+    let retdata = call.execution.retdata.0.iter().map(|f| (*f).into()).collect();
+
+    let builtin_counter = call.vm_resources.builtin_instance_counter;
+    let execution_resources = trace::ExecutionResources {
+        n_steps: call.vm_resources.n_steps as u64,
+        n_memory_holes: call.vm_resources.n_memory_holes as u64,
+        builtin_instance_counter: builtin_counter.into_iter().map(|(k, v)| (k, v as u64)).collect(),
     };
 
-    katana_primitives::trace::CallInfo {
-        contract_address: to_address(call_info.call.storage_address),
-        caller_address: to_address(call_info.call.caller_address),
-        call_type: match call_info.call.call_type {
-            CallType::Call => katana_primitives::trace::CallType::Call,
-            CallType::Delegate => katana_primitives::trace::CallType::Delegate,
-        },
-        code_address: call_info.call.code_address.map(to_address),
-        class_hash: call_info.call.class_hash.map(|a| a.0.into()),
-        entry_point_selector: call_info.call.entry_point_selector.0.into(),
-        entry_point_type: match call_info.call.entry_point_type {
-            EntryPointType::External => katana_primitives::trace::EntryPointType::External,
-            EntryPointType::L1Handler => katana_primitives::trace::EntryPointType::L1Handler,
-            EntryPointType::Constructor => katana_primitives::trace::EntryPointType::Constructor,
-        },
-        calldata: call_info.call.calldata.0.iter().map(|f| (*f).into()).collect(),
-        retdata: call_info.execution.retdata.0.iter().map(|f| (*f).into()).collect(),
-        execution_resources: katana_primitives::trace::ExecutionResources {
-            n_steps: call_info.vm_resources.n_steps as u64,
-            n_memory_holes: call_info.vm_resources.n_memory_holes as u64,
-            builtin_instance_counter: call_info
-                .vm_resources
-                .builtin_instance_counter
-                .into_iter()
-                .map(|(k, v)| (k, v as u64))
-                .collect(),
-        },
-        events: call_info
-            .execution
-            .events
-            .iter()
-            .map(|e| katana_primitives::event::OrderedEvent {
-                order: e.order as u64,
-                keys: e.event.keys.iter().map(|f| f.0.into()).collect(),
-                data: e.event.data.0.iter().map(|f| (*f).into()).collect(),
-            })
-            .collect(),
-        l2_to_l1_messages: call_info
-            .execution
-            .l2_to_l1_messages
-            .iter()
-            .map(|m| {
-                let to_address = starknet_api_ethaddr_to_felt(m.message.to_address);
-                katana_primitives::message::OrderedL2ToL1Message {
-                    order: m.order as u64,
-                    from_address: message_to_l1_from_address,
-                    to_address,
-                    payload: m.message.payload.0.iter().map(|f| (*f).into()).collect(),
-                }
-            })
-            .collect(),
-        storage_read_values: call_info.storage_read_values.into_iter().map(|f| f.into()).collect(),
-        accessed_storage_keys: call_info
-            .accessed_storage_keys
-            .into_iter()
-            .map(|sk| (*sk.0.key()).into())
-            .collect(),
-        inner_calls: call_info.inner_calls.iter().map(|c| to_call_info(c.clone())).collect(),
-        gas_consumed: call_info.execution.gas_consumed as u128,
-        failed: call_info.execution.failed,
+    let CallExecution { events, l2_to_l1_messages, .. } = call.execution;
+
+    let events = events.into_iter().map(to_ordered_event).collect();
+    let l1_msg =
+        l2_to_l1_messages.into_iter().map(|m| to_l2_l1_messages(m, contract_address)).collect();
+
+    let call_type = match call.call.call_type {
+        CallType::Call => trace::CallType::Call,
+        CallType::Delegate => trace::CallType::Delegate,
+    };
+
+    let entry_point_type = match call.call.entry_point_type {
+        EntryPointType::External => trace::EntryPointType::External,
+        EntryPointType::L1Handler => trace::EntryPointType::L1Handler,
+        EntryPointType::Constructor => trace::EntryPointType::Constructor,
+    };
+
+    let storage_read_values = call.storage_read_values.into_iter().map(|f| f.into()).collect();
+    let storg_keys = call.accessed_storage_keys.into_iter().map(|k| (*k.0.key()).into()).collect();
+    let inner_calls = call.inner_calls.into_iter().map(to_call_info).collect();
+
+    trace::CallInfo {
+        contract_address,
+        caller_address,
+        call_type,
+        code_address,
+        class_hash,
+        entry_point_selector,
+        entry_point_type,
+        calldata,
+        retdata,
+        execution_resources,
+        events,
+        l2_to_l1_messages: l1_msg,
+        storage_read_values,
+        accessed_storage_keys: storg_keys,
+        inner_calls,
+        gas_consumed: call.execution.gas_consumed as u128,
+        failed: call.execution.failed,
     }
+}
+
+fn to_ordered_event(e: OrderedEvent) -> event::OrderedEvent {
+    event::OrderedEvent {
+        order: e.order as u64,
+        keys: e.event.keys.into_iter().map(|f| f.0.into()).collect(),
+        data: e.event.data.0.into_iter().map(FieldElement::from).collect(),
+    }
+}
+
+fn to_l2_l1_messages(
+    m: OrderedL2ToL1Message,
+    from_address: katana_primitives::contract::ContractAddress,
+) -> message::OrderedL2ToL1Message {
+    let order = m.order as u64;
+    let to_address = starknet_api_ethaddr_to_felt(m.message.to_address);
+    let payload = m.message.payload.0.into_iter().map(FieldElement::from).collect();
+    message::OrderedL2ToL1Message { order, from_address, to_address, payload }
 }
 
 #[cfg(test)]
